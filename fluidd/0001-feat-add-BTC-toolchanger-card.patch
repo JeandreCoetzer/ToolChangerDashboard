@@ -1,0 +1,1825 @@
+From eea80e802025151173aabccdd453c8b03452451b Mon Sep 17 00:00:00 2001
+From: Jeandre Coetzer <j.coetzer@paradigmengineers.com.au>
+Date: Wed, 30 Sep 2026 10:15:47 +0800
+Subject: [PATCH] feat: add BTC toolchanger card
+
+Adds a dashboard card for hotend-swapping toolchangers that run the
+BTC (Bikin Toolchanger) macros, e.g. Lineux Hotswap. Each hotend is
+shown with its filament colour, temperature and fan speed; clicking
+one opens a dialog to select the tool, set its temperature, edit its
+offsets and pick a Spoolman spool (via the existing spool selection
+dialog with targetMacro).
+
+The card is only shown when the btc_dashboard Klipper add-on is
+loaded (printer.btc_dashboard), like the MMU and AFC cards.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Sh7jAWuaMdMWk4mskJqshZ
+---
+ .../btc-toolchanger/BtcToolchangerCard.vue    | 335 +++++++++++
+ .../btc-toolchanger/BtcToolchangerHotend.vue  | 112 ++++
+ .../BtcToolchangerSettings.vue                | 127 +++++
+ .../btc-toolchanger/BtcToolchangerTile.vue    | 223 ++++++++
+ .../BtcToolchangerToolDialog.vue              | 518 ++++++++++++++++++
+ src/globals.ts                                |   2 +
+ src/locales/en.yaml                           |  78 +++
+ src/mixins/btcToolchanger.ts                  | 122 +++++
+ src/store/config/state.ts                     |   7 +
+ src/store/config/types.ts                     |  16 +
+ src/store/layout/state.ts                     |   1 +
+ src/typings/klipper.d.ts                      |  80 +++
+ src/views/Dashboard.vue                       |   7 +
+ 13 files changed, 1628 insertions(+)
+ create mode 100644 src/components/widgets/btc-toolchanger/BtcToolchangerCard.vue
+ create mode 100644 src/components/widgets/btc-toolchanger/BtcToolchangerHotend.vue
+ create mode 100644 src/components/widgets/btc-toolchanger/BtcToolchangerSettings.vue
+ create mode 100644 src/components/widgets/btc-toolchanger/BtcToolchangerTile.vue
+ create mode 100644 src/components/widgets/btc-toolchanger/BtcToolchangerToolDialog.vue
+ create mode 100644 src/mixins/btcToolchanger.ts
+
+diff --git a/src/components/widgets/btc-toolchanger/BtcToolchangerCard.vue b/src/components/widgets/btc-toolchanger/BtcToolchangerCard.vue
+new file mode 100644
+index 0000000..2d0b7cb
+--- /dev/null
++++ b/src/components/widgets/btc-toolchanger/BtcToolchangerCard.vue
+@@ -0,0 +1,335 @@
++<template>
++  <collapsable-card
++    :title="$t('app.btc_toolchanger.title.card')"
++    icon="$btcToolchanger"
++    draggable
++    layout-path="dashboard.btc-toolchanger-card"
++  >
++    <template #menu>
++      <v-chip
++        small
++        label
++        class="me-1 btc-chip"
++        :color="btcActiveTool < 0 ? undefined : 'primary'"
++      >
++        {{ chipText }}
++      </v-chip>
++      <btc-toolchanger-settings />
++    </template>
++
++    <v-alert
++      v-if="errors.length"
++      dense
++      text
++      type="warning"
++      class="mx-3 mt-3 mb-0 text-body-2"
++    >
++      <div
++        v-for="error in errors"
++        :key="`error:${error}`"
++      >
++        {{ error }}
++      </div>
++    </v-alert>
++
++    <div
++      v-if="btc && btcSettings.showStatus"
++      class="btc-strip secondary--text"
++    >
++      <span v-if="btc.config.carriage_sense">
++        <span
++          class="btc-dot"
++          :class="carriageDotClass"
++        />
++        {{ $t('app.btc_toolchanger.label.carriage') }}
++        <strong class="text--primary">{{ carriageText }}</strong>
++        <span
++          v-if="carriageMismatch"
++          class="error--text"
++        >
++          · {{ $t('app.btc_toolchanger.label.mismatch') }}
++        </span>
++      </span>
++      <span v-if="btc.dockslide">
++        {{ $t('app.btc_toolchanger.label.dockslide') }}
++        <strong class="text--primary">{{ dockslideText }}</strong>
++      </span>
++      <span>
++        {{ changesLabel }}
++        <strong class="text--primary btc-mono">{{ changeCount }}</strong>
++      </span>
++      <v-spacer />
++      <span v-if="btcBusy">
++        <span class="btc-dot warning" />
++        {{ $t('app.btc_toolchanger.label.changing') }}
++      </span>
++      <span v-else-if="btc.stats.last_result">
++        {{ $t('app.btc_toolchanger.label.last') }}
++        <strong class="text--primary btc-mono">{{ btc.stats.last_time.toFixed(1) }} s</strong>
++        <span :class="btc.stats.last_result === 'ok' ? 'success--text' : 'error--text'">
++          {{ btc.stats.last_result === 'ok' ? $t('app.btc_toolchanger.label.ok') : $t('app.btc_toolchanger.label.failed') }}
++        </span>
++      </span>
++    </div>
++
++    <v-card-text class="pa-3">
++      <div
++        v-if="btcTools.length"
++        class="btc-grid"
++        :style="gridStyle"
++      >
++        <btc-toolchanger-tile
++          v-for="tool in btcTools"
++          :key="`tool:${tool.n}`"
++          :tool="tool"
++          @open="openTool"
++        />
++      </div>
++      <div
++        v-else
++        class="text--disabled text-center py-4"
++      >
++        {{ $t('app.btc_toolchanger.msg.no_tools') }}
++      </div>
++
++      <div
++        v-if="btcSettings.showActions"
++        class="d-flex flex-wrap btc-actions mt-3"
++      >
++        <app-btn
++          small
++          class="flex-grow-1"
++          :disabled="btcLocked"
++          @click="sendGcode('CHECK_CARRIAGE')"
++        >
++          {{ $t('app.btc_toolchanger.btn.check_tool') }}
++        </app-btn>
++        <app-btn
++          small
++          class="flex-grow-1"
++          :disabled="btcLocked"
++          @click="sendGcode('SANITY_CHECK_TOOLS')"
++        >
++          {{ $t('app.btc_toolchanger.btn.sanity_check') }}
++        </app-btn>
++        <app-btn
++          v-if="btc?.dockslide"
++          small
++          class="flex-grow-1"
++          :disabled="btcLocked"
++          @click="sendGcode('DOCKSLIDE_HOME')"
++        >
++          {{ $t('app.btc_toolchanger.btn.home_dockslide') }}
++        </app-btn>
++        <app-btn
++          v-if="btcActiveTool >= 0"
++          small
++          class="flex-grow-1"
++          :disabled="btcLocked"
++          @click="sendGcode(`TOOL_DROPOFF TOOLNUMBER=${btcActiveTool}`)"
++        >
++          {{ $t('app.btc_toolchanger.btn.drop_off_tool', { name: `T${btcActiveTool}` }) }}
++        </app-btn>
++      </div>
++    </v-card-text>
++
++    <template v-if="btcSettings.showLog">
++      <v-divider />
++      <v-card-text class="pa-3">
++        <div class="text-caption secondary--text mb-1">
++          {{ $t('app.btc_toolchanger.title.log') }}
++        </div>
++        <div
++          v-if="!log.length"
++          class="text--disabled text-body-2"
++        >
++          {{ $t('app.btc_toolchanger.msg.no_toolchanges') }}
++        </div>
++        <div
++          v-for="entry in log"
++          :key="`log:${entry.time}:${entry.label}`"
++          class="btc-log-row text-body-2"
++        >
++          <span class="btc-mono secondary--text">{{ $filters.formatTimeWithSeconds(entry.time * 1000) }}</span>
++          <span class="btc-mono">{{ entry.label }}</span>
++          <span class="btc-mono secondary--text">{{ entry.duration.toFixed(1) }} s</span>
++          <span
++            class="text--disabled btc-log-detail"
++            :title="entry.detail"
++          >{{ entry.detail }}</span>
++          <span
++            class="text-right"
++            :class="entry.result === 'ok' ? 'success--text' : 'error--text'"
++          >
++            {{ entry.result === 'ok' ? $t('app.btc_toolchanger.label.ok') : $t('app.btc_toolchanger.label.fail') }}
++          </span>
++        </div>
++      </v-card-text>
++    </template>
++
++    <btc-toolchanger-tool-dialog
++      v-model="showToolDialog"
++      :tool-number="selectedTool"
++    />
++  </collapsable-card>
++</template>
++
++<script lang="ts">
++import { Component, Mixins } from 'vue-property-decorator'
++import BtcToolchangerMixin from '@/mixins/btcToolchanger'
++import BtcToolchangerTile from './BtcToolchangerTile.vue'
++import BtcToolchangerToolDialog from './BtcToolchangerToolDialog.vue'
++import BtcToolchangerSettings from './BtcToolchangerSettings.vue'
++
++const LOG_ROWS = 10
++const MAX_AUTO_COLUMNS = 4
++const SIX_TOOL_COLUMNS = 3
++
++@Component({
++  components: {
++    BtcToolchangerTile,
++    BtcToolchangerToolDialog,
++    BtcToolchangerSettings
++  }
++})
++export default class BtcToolchangerCard extends Mixins(BtcToolchangerMixin) {
++  showToolDialog = false
++  selectedTool: number | null = null
++
++  get errors (): string[] {
++    return this.btc?.errors ?? []
++  }
++
++  get log (): Klipper.BtcDashboardLogEntry[] {
++    return (this.btc?.log ?? []).slice(0, LOG_ROWS)
++  }
++
++  get changesLabel (): string {
++    return this.printerPrinting || this.printerPaused
++      ? this.$t('app.btc_toolchanger.label.changes_this_print').toString()
++      : this.$t('app.btc_toolchanger.label.changes').toString()
++  }
++
++  get changeCount (): number {
++    const stats = this.btc?.stats
++
++    if (!stats) return 0
++
++    return this.printerPrinting || this.printerPaused ? stats.changes_print : stats.changes_total
++  }
++
++  get columns (): number {
++    const setting = this.btcSettings.columns
++
++    if (setting !== 'auto') return setting
++
++    const count = this.btcTools.length
++
++    if (count <= MAX_AUTO_COLUMNS) return Math.max(count, 1)
++    if (count <= 6) return SIX_TOOL_COLUMNS
++
++    return MAX_AUTO_COLUMNS
++  }
++
++  get gridStyle (): Record<string, string> {
++    return { gridTemplateColumns: `repeat(${this.columns}, minmax(0, 1fr))` }
++  }
++
++  get chipText (): string {
++    if (this.btcActiveTool < 0) return this.$t('app.btc_toolchanger.label.carriage_empty').toString()
++
++    return this.$t('app.btc_toolchanger.label.tool_active', { name: `T${this.btcActiveTool}` }).toString()
++  }
++
++  get carriageText (): string {
++    return this.btc?.carriage === 'PRESSED'
++      ? this.$t('app.btc_toolchanger.label.locked').toString()
++      : this.$t('app.btc_toolchanger.label.empty').toString()
++  }
++
++  get carriageMismatch (): boolean {
++    const carriage = this.btc?.carriage
++
++    if (!carriage) return false
++
++    return (carriage === 'PRESSED') !== (this.btcActiveTool >= 0)
++  }
++
++  get carriageDotClass (): string {
++    if (this.carriageMismatch) return 'error'
++
++    return this.btc?.carriage === 'PRESSED' ? 'success' : ''
++  }
++
++  get dockslideText (): string {
++    const dockslide = this.btc?.dockslide
++
++    if (!dockslide) return ''
++
++    const state = this.$t(`app.btc_toolchanger.dockslide.${dockslide.state}`).toString()
++
++    return dockslide.homed
++      ? state
++      : `${state} (${this.$t('app.btc_toolchanger.label.not_homed')})`
++  }
++
++  openTool (n: number) {
++    this.selectedTool = n
++    this.showToolDialog = true
++  }
++}
++</script>
++
++<style lang="scss" scoped>
++.btc-strip {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 4px 16px;
++  padding: 10px 16px;
++  font-size: 12px;
++  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
++}
++
++.btc-dot {
++  display: inline-block;
++  width: 7px;
++  height: 7px;
++  margin-right: 4px;
++  border-radius: 50%;
++  vertical-align: 1px;
++  background-color: #666666;
++}
++
++.btc-grid {
++  display: grid;
++  gap: 8px;
++}
++
++.btc-actions {
++  gap: 8px;
++}
++
++.btc-mono {
++  font-family: 'Roboto Mono', monospace;
++}
++
++.btc-log-row {
++  display: grid;
++  grid-template-columns: 80px 100px 56px minmax(0, 1fr) 40px;
++  gap: 8px;
++  padding: 3px 0;
++  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
++}
++
++.btc-log-detail {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.btc-chip {
++  font-weight: 700;
++  letter-spacing: 0.5px;
++}
++</style>
+diff --git a/src/components/widgets/btc-toolchanger/BtcToolchangerHotend.vue b/src/components/widgets/btc-toolchanger/BtcToolchangerHotend.vue
+new file mode 100644
+index 0000000..25941d8
+--- /dev/null
++++ b/src/components/widgets/btc-toolchanger/BtcToolchangerHotend.vue
+@@ -0,0 +1,112 @@
++<template>
++  <svg
++    :width="width"
++    :height="height"
++    viewBox="0 0 60 80"
++    aria-hidden="true"
++  >
++    <rect
++      x="28"
++      y="0"
++      width="4"
++      height="8"
++      :fill="filament"
++    />
++    <rect
++      x="21"
++      y="6"
++      width="18"
++      height="6"
++      rx="2"
++      :fill="filament"
++    />
++    <rect
++      x="24"
++      y="12"
++      width="12"
++      height="30"
++      fill="#5f646c"
++    />
++    <rect
++      v-for="y in fins"
++      :key="`fin:${y}`"
++      x="14"
++      :y="y"
++      width="32"
++      height="3"
++      rx="1"
++      fill="#8b9098"
++    />
++    <rect
++      x="27"
++      y="42"
++      width="6"
++      height="8"
++      fill="#b7bcc4"
++    />
++    <rect
++      x="16"
++      y="50"
++      width="28"
++      height="14"
++      rx="2"
++      :fill="blockColor"
++    />
++    <path
++      d="M24 64h12l-4 8h-4z"
++      fill="#c9a24a"
++    />
++    <circle
++      v-if="glow"
++      cx="30"
++      cy="75"
++      r="5"
++      :fill="glow"
++    />
++  </svg>
++</template>
++
++<script lang="ts">
++import { Component, Prop, Vue } from 'vue-property-decorator'
++import type { BtcToolKind } from '@/mixins/btcToolchanger'
++
++const FIN_POSITIONS = [14, 20, 26, 32, 38]
++const NO_FILAMENT_COLOR = '#777777'
++
++@Component({})
++export default class BtcToolchangerHotend extends Vue {
++  @Prop({ type: String, default: null })
++  readonly color!: string | null
++
++  @Prop({ type: String, default: 'docked' })
++  readonly kind!: BtcToolKind
++
++  @Prop({ type: Number, default: 52 })
++  readonly width!: number
++
++  @Prop({ type: Number, default: 70 })
++  readonly height!: number
++
++  get fins (): number[] {
++    return FIN_POSITIONS
++  }
++
++  get filament (): string {
++    return this.color ?? NO_FILAMENT_COLOR
++  }
++
++  get blockColor (): string {
++    if (this.kind === 'active') return '#d84315'
++    if (this.kind === 'standby') return '#b86b2a'
++
++    return '#4a4f57'
++  }
++
++  get glow (): string | null {
++    if (this.kind === 'active') return 'rgba(255, 112, 67, 0.55)'
++    if (this.kind === 'standby') return 'rgba(255, 152, 0, 0.3)'
++
++    return null
++  }
++}
++</script>
+diff --git a/src/components/widgets/btc-toolchanger/BtcToolchangerSettings.vue b/src/components/widgets/btc-toolchanger/BtcToolchangerSettings.vue
+new file mode 100644
+index 0000000..6c947eb
+--- /dev/null
++++ b/src/components/widgets/btc-toolchanger/BtcToolchangerSettings.vue
+@@ -0,0 +1,127 @@
++<template>
++  <v-menu
++    bottom
++    left
++    offset-y
++    transition="slide-y-transition"
++    :close-on-content-click="false"
++  >
++    <template #activator="{ on, attrs }">
++      <app-btn
++        icon
++        :aria-label="$t('app.btc_toolchanger.title.settings')"
++        v-bind="attrs"
++        v-on="on"
++      >
++        <v-icon dense>
++          $cog
++        </v-icon>
++      </app-btn>
++    </template>
++
++    <v-list dense>
++      <v-list-item>
++        <v-select
++          v-model="columns"
++          :items="columnItems"
++          :label="$t('app.btc_toolchanger.label.tiles_per_row')"
++          outlined
++          dense
++          hide-details
++          class="mt-2"
++        />
++      </v-list-item>
++
++      <v-list-item @click="showStatus = !showStatus">
++        <v-list-item-action class="my-0">
++          <v-checkbox :input-value="showStatus" />
++        </v-list-item-action>
++        <v-list-item-content>
++          <v-list-item-title>
++            {{ $t('app.btc_toolchanger.label.show_status') }}
++          </v-list-item-title>
++        </v-list-item-content>
++      </v-list-item>
++
++      <v-list-item @click="showActions = !showActions">
++        <v-list-item-action class="my-0">
++          <v-checkbox :input-value="showActions" />
++        </v-list-item-action>
++        <v-list-item-content>
++          <v-list-item-title>
++            {{ $t('app.btc_toolchanger.label.show_actions') }}
++          </v-list-item-title>
++        </v-list-item-content>
++      </v-list-item>
++
++      <v-list-item @click="showLog = !showLog">
++        <v-list-item-action class="my-0">
++          <v-checkbox :input-value="showLog" />
++        </v-list-item-action>
++        <v-list-item-content>
++          <v-list-item-title>
++            {{ $t('app.btc_toolchanger.label.show_log') }}
++          </v-list-item-title>
++        </v-list-item-content>
++      </v-list-item>
++    </v-list>
++  </v-menu>
++</template>
++
++<script lang="ts">
++import { Component, Mixins } from 'vue-property-decorator'
++import BtcToolchangerMixin from '@/mixins/btcToolchanger'
++import type { BtcToolchangerColumns } from '@/store/config/types'
++
++const COLUMN_CHOICES: BtcToolchangerColumns[] = [2, 3, 4, 6, 8]
++
++@Component({})
++export default class BtcToolchangerSettings extends Mixins(BtcToolchangerMixin) {
++  get columnItems (): { text: string, value: BtcToolchangerColumns }[] {
++    return [
++      { text: this.$t('app.btc_toolchanger.label.auto').toString(), value: 'auto' },
++      ...COLUMN_CHOICES.map(value => ({ text: value.toString(), value }))
++    ]
++  }
++
++  save (key: string, value: unknown) {
++    this.$typedDispatch('config/saveByPath', {
++      path: `uiSettings.btcToolchanger.${key}`,
++      value,
++      server: true
++    })
++  }
++
++  get columns (): BtcToolchangerColumns {
++    return this.btcSettings.columns
++  }
++
++  set columns (value: BtcToolchangerColumns) {
++    this.save('columns', value)
++  }
++
++  get showStatus (): boolean {
++    return this.btcSettings.showStatus
++  }
++
++  set showStatus (value: boolean) {
++    this.save('showStatus', value)
++  }
++
++  get showActions (): boolean {
++    return this.btcSettings.showActions
++  }
++
++  set showActions (value: boolean) {
++    this.save('showActions', value)
++  }
++
++  get showLog (): boolean {
++    return this.btcSettings.showLog
++  }
++
++  set showLog (value: boolean) {
++    this.save('showLog', value)
++  }
++}
++</script>
+diff --git a/src/components/widgets/btc-toolchanger/BtcToolchangerTile.vue b/src/components/widgets/btc-toolchanger/BtcToolchangerTile.vue
+new file mode 100644
+index 0000000..3c5037b
+--- /dev/null
++++ b/src/components/widgets/btc-toolchanger/BtcToolchangerTile.vue
+@@ -0,0 +1,223 @@
++<template>
++  <button
++    type="button"
++    class="btc-tile"
++    :class="`btc-tile--${kind}`"
++    :aria-label="ariaLabel"
++    @click="$emit('open', tool.n)"
++  >
++    <span class="btc-tile__top">
++      <span class="btc-tile__id">{{ tool.name }}</span>
++      <span
++        class="btc-tile__dot"
++        :class="dotClass"
++        :title="dotTitle"
++      />
++    </span>
++    <btc-toolchanger-hotend
++      class="btc-tile__art"
++      :color="look.color"
++      :kind="kind"
++    />
++    <span class="btc-tile__mat">
++      <span
++        class="btc-tile__swatch"
++        :style="{ backgroundColor: look.color ?? '#777777' }"
++      />
++      <span class="btc-tile__mat-text">
++        {{ look.material || $t('app.btc_toolchanger.label.no_filament') }}
++      </span>
++    </span>
++    <span class="btc-tile__nums">
++      <span :class="{ 'text--disabled': !hot }">{{ tempText }}</span>
++      <span class="btc-tile__fan text--secondary">
++        <v-icon
++          x-small
++          class="me-1"
++        >
++          $fan
++        </v-icon>
++        {{ btcFormatFan(tool.fan_speed) }}
++      </span>
++    </span>
++  </button>
++</template>
++
++<script lang="ts">
++import { Component, Mixins, Prop } from 'vue-property-decorator'
++import BtcToolchangerMixin, { type BtcToolKind, type BtcToolLook } from '@/mixins/btcToolchanger'
++import BtcToolchangerHotend from './BtcToolchangerHotend.vue'
++
++@Component({
++  components: {
++    BtcToolchangerHotend
++  }
++})
++export default class BtcToolchangerTile extends Mixins(BtcToolchangerMixin) {
++  @Prop({ type: Object, required: true })
++  readonly tool!: Klipper.BtcDashboardToolState
++
++  get kind (): BtcToolKind {
++    return this.btcToolKind(this.tool)
++  }
++
++  get look (): BtcToolLook {
++    return this.btcToolLook(this.tool)
++  }
++
++  get hot (): boolean {
++    return this.tool.target > 0
++  }
++
++  get stateLabel (): string {
++    return this.$t(`app.btc_toolchanger.state.${this.kind}`).toString()
++  }
++
++  get dotClass (): Record<string, boolean> {
++    return {
++      [`btc-tile__dot--${this.kind}`]: true,
++      'btc-tile__dot--sensed': this.tool.docked === true,
++      'btc-tile__dot--missing': this.tool.docked === false
++    }
++  }
++
++  get dotTitle (): string {
++    if (this.tool.docked === true) return `${this.stateLabel}, ${this.$t('app.btc_toolchanger.label.in_dock')}`
++    if (this.tool.docked === false) return `${this.stateLabel}, ${this.$t('app.btc_toolchanger.label.not_in_dock')}`
++
++    return this.stateLabel
++  }
++
++  get tempText (): string {
++    const temp = this.btcFormatTemp(this.tool.temperature)
++
++    if (!this.hot) return `${temp}° ${this.$t('app.btc_toolchanger.label.heater_off')}`
++
++    return `${temp}/${this.btcFormatTemp(this.tool.target)}°`
++  }
++
++  get ariaLabel (): string {
++    return this.$t('app.btc_toolchanger.label.tile', {
++      name: this.tool.name,
++      material: this.look.material,
++      state: this.stateLabel,
++      temp: this.btcFormatTemp(this.tool.temperature)
++    }).toString()
++  }
++}
++</script>
++
++<style lang="scss" scoped>
++.btc-tile {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++  min-width: 0;
++  padding: 7px 8px;
++  border-radius: 6px;
++  border: 1px solid rgba(128, 128, 128, 0.3);
++  background: rgba(128, 128, 128, 0.08);
++  color: inherit;
++  font: inherit;
++  text-align: left;
++  cursor: pointer;
++  transition: border-color 0.15s;
++
++  &:hover {
++    border-color: rgba(128, 128, 128, 0.6);
++  }
++
++  &:focus-visible {
++    outline: 2px solid var(--v-primary-base);
++    outline-offset: 2px;
++  }
++
++  &--active {
++    background: rgba(128, 128, 128, 0.16);
++    border-color: var(--v-primary-base);
++    box-shadow: inset 0 0 0 1px var(--v-primary-base);
++
++    .btc-tile__id {
++      color: var(--v-primary-base);
++    }
++  }
++}
++
++.btc-tile__top {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++}
++
++.btc-tile__id {
++  font-size: 13px;
++  font-weight: 700;
++}
++
++.btc-tile__dot {
++  width: 8px;
++  height: 8px;
++  border-radius: 50%;
++  background: #666666;
++
++  &--active {
++    background: var(--v-primary-base);
++  }
++
++  &--standby {
++    background: var(--v-warning-base);
++  }
++
++  &--sensed {
++    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2), 0 0 0 3px var(--v-success-base);
++  }
++
++  &--missing {
++    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.2), 0 0 0 3px var(--v-error-base);
++  }
++}
++
++.btc-tile__art {
++  align-self: center;
++}
++
++.btc-tile__mat {
++  display: flex;
++  align-items: center;
++  gap: 5px;
++  min-width: 0;
++  font-size: 11px;
++  opacity: 0.85;
++}
++
++.btc-tile__mat-text {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.btc-tile__swatch {
++  flex-shrink: 0;
++  width: 9px;
++  height: 9px;
++  border-radius: 2px;
++  border: 1px solid rgba(128, 128, 128, 0.6);
++}
++
++.btc-tile__nums {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  justify-content: space-between;
++  column-gap: 6px;
++  font-family: 'Roboto Mono', monospace;
++  font-size: 11px;
++  white-space: nowrap;
++}
++
++.btc-tile__fan {
++  display: inline-flex;
++  align-items: center;
++  margin-left: auto;
++}
++</style>
+diff --git a/src/components/widgets/btc-toolchanger/BtcToolchangerToolDialog.vue b/src/components/widgets/btc-toolchanger/BtcToolchangerToolDialog.vue
+new file mode 100644
+index 0000000..f8f13b6
+--- /dev/null
++++ b/src/components/widgets/btc-toolchanger/BtcToolchangerToolDialog.vue
+@@ -0,0 +1,518 @@
++<template>
++  <app-dialog
++    v-model="open"
++    width="560"
++    title-shadow
++    :title="title"
++  >
++    <template v-if="tool">
++      <v-card-text class="pt-4">
++        <div class="d-flex btc-dlg-top">
++          <div class="btc-dlg-hero me-4">
++            <btc-toolchanger-hotend
++              :color="look.color"
++              :kind="kind"
++              :width="84"
++              :height="112"
++            />
++          </div>
++          <div class="btc-dlg-facts flex-grow-1">
++            <div>
++              <div class="text-caption secondary--text">
++                {{ $t('app.btc_toolchanger.label.state') }}
++              </div>
++              <div :class="stateClass">
++                {{ stateText }}
++              </div>
++            </div>
++            <div>
++              <div class="text-caption secondary--text">
++                {{ $t('app.btc_toolchanger.label.temperature') }}
++              </div>
++              <div class="btc-mono">
++                {{ btcFormatTemp(tool.temperature) }} / {{ btcFormatTemp(tool.target) }} °C
++              </div>
++            </div>
++            <div>
++              <div class="text-caption secondary--text">
++                {{ $t('app.btc_toolchanger.label.hotend_fan') }}
++              </div>
++              <div class="btc-mono">
++                {{ btcFormatFan(tool.fan_speed) }}
++              </div>
++            </div>
++            <div>
++              <div class="text-caption secondary--text">
++                {{ $t('app.btc_toolchanger.label.heater') }}
++              </div>
++              <div class="btc-mono">
++                {{ tool.extruder }}
++              </div>
++            </div>
++            <div class="btc-dlg-wide">
++              <div class="text-caption secondary--text">
++                {{ $t('app.btc_toolchanger.label.input_shaper') }}
++              </div>
++              <div class="btc-mono">
++                {{ shaperText }}
++              </div>
++            </div>
++          </div>
++        </div>
++      </v-card-text>
++
++      <v-divider />
++
++      <v-card-text>
++        <div class="text-caption secondary--text mb-2">
++          {{ $t('app.btc_toolchanger.label.target_temperature') }}
++        </div>
++        <div class="d-flex flex-wrap align-center btc-gap">
++          <app-btn
++            small
++            @click="setTemp(0)"
++          >
++            {{ $t('app.btc_toolchanger.label.heater_off') }}
++          </app-btn>
++          <app-btn
++            v-for="preset in presets"
++            :key="`preset:${preset.label}`"
++            small
++            @click="setTemp(preset.temp)"
++          >
++            {{ preset.label }} {{ preset.temp }}
++          </app-btn>
++          <app-btn
++            v-if="spoolTemp !== null"
++            small
++            color="primary"
++            @click="setTemp(spoolTemp)"
++          >
++            {{ $t('app.btc_toolchanger.btn.spool_preset', { temp: spoolTemp }) }}
++          </app-btn>
++          <v-spacer />
++          <v-text-field
++            v-model.number="targetInput"
++            type="number"
++            min="0"
++            :max="maxTemp"
++            suffix="°C"
++            :label="$t('app.btc_toolchanger.label.target')"
++            outlined
++            dense
++            hide-details
++            class="btc-num"
++            @keyup.enter="setTemp(targetInput)"
++          />
++          <app-btn
++            small
++            @click="setTemp(targetInput)"
++          >
++            {{ $t('app.btc_toolchanger.btn.set') }}
++          </app-btn>
++        </div>
++        <div class="text-caption text--disabled mt-2">
++          {{ presetsSourceText }}
++        </div>
++      </v-card-text>
++
++      <v-divider />
++
++      <v-card-text>
++        <div class="text-caption secondary--text mb-2">
++          {{ $t('app.btc_toolchanger.label.offsets') }}
++        </div>
++        <div class="d-flex flex-wrap align-center btc-gap">
++          <v-text-field
++            v-for="axis in axes"
++            :key="`axis:${axis}`"
++            v-model.number="offsets[axis]"
++            type="number"
++            step="0.001"
++            :label="axis.toUpperCase()"
++            suffix="mm"
++            outlined
++            dense
++            hide-details
++            :disabled="printerPrinting || printerPaused"
++            class="btc-num"
++          />
++          <app-btn
++            small
++            :disabled="printerPrinting || printerPaused || !offsetsValid"
++            @click="saveOffsets"
++          >
++            {{ $t('app.btc_toolchanger.btn.save') }}
++          </app-btn>
++        </div>
++        <div class="text-caption text--disabled mt-2">
++          {{ offsetHint }}
++        </div>
++      </v-card-text>
++
++      <v-divider />
++
++      <v-card-text>
++        <div class="text-caption secondary--text mb-2">
++          {{ $t('app.btc_toolchanger.label.filament') }}
++        </div>
++        <div
++          v-if="btcUseSpoolman"
++          class="d-flex align-center btc-gap"
++        >
++          <span
++            class="btc-swatch"
++            :style="{ backgroundColor: look.color ?? '#777777' }"
++          />
++          <div class="flex-grow-1">
++            <div>{{ look.material || $t('app.btc_toolchanger.label.no_spool') }}</div>
++            <div
++              v-if="look.spool"
++              class="text-caption text--disabled"
++            >
++              #{{ look.spool.id }}
++              <template v-if="look.spool.remaining_weight != null">
++                · {{ Math.round(look.spool.remaining_weight) }} g
++              </template>
++            </div>
++          </div>
++          <app-btn
++            small
++            @click="changeSpool"
++          >
++            {{ $t('app.btc_toolchanger.btn.change_spool') }}
++          </app-btn>
++        </div>
++        <div
++          v-else
++          class="d-flex flex-wrap align-center btc-gap"
++        >
++          <v-text-field
++            v-model="localMaterial"
++            :label="$t('app.btc_toolchanger.label.material')"
++            outlined
++            dense
++            hide-details
++            maxlength="20"
++            class="btc-material"
++          />
++          <label class="d-flex align-center text-caption secondary--text">
++            {{ $t('app.btc_toolchanger.label.colour') }}
++            <input
++              v-model="localColor"
++              type="color"
++              class="btc-color ms-2"
++            >
++          </label>
++          <app-btn
++            small
++            @click="saveLocal"
++          >
++            {{ $t('app.btc_toolchanger.btn.save') }}
++          </app-btn>
++        </div>
++      </v-card-text>
++    </template>
++
++    <template #actions>
++      <app-btn
++        v-if="tool?.active"
++        text
++        :disabled="btcLocked"
++        @click="dropoff"
++      >
++        {{ $t('app.btc_toolchanger.btn.drop_off') }}
++      </app-btn>
++      <v-spacer />
++      <v-tooltip
++        top
++        :disabled="!selectBlockedByPrint"
++      >
++        <template #activator="{ on, attrs }">
++          <div
++            v-bind="attrs"
++            v-on="on"
++          >
++            <app-btn
++              color="primary"
++              :disabled="!tool || tool.active || btcLocked"
++              @click="selectTool"
++            >
++              {{ selectText }}
++            </app-btn>
++          </div>
++        </template>
++        <span>{{ $t('app.btc_toolchanger.msg.locked_while_printing') }}</span>
++      </v-tooltip>
++    </template>
++  </app-dialog>
++</template>
++
++<script lang="ts">
++import { Component, Mixins, Prop, VModel, Watch } from 'vue-property-decorator'
++import BtcToolchangerMixin, {
++  BTC_MAX_OFFSET,
++  BTC_MAX_TEMP,
++  type BtcToolKind,
++  type BtcToolLook
++} from '@/mixins/btcToolchanger'
++import BtcToolchangerHotend from './BtcToolchangerHotend.vue'
++
++type Axis = 'x' | 'y' | 'z'
++
++const DEFAULT_LOCAL_COLOR = '#777777'
++
++@Component({
++  components: {
++    BtcToolchangerHotend
++  }
++})
++export default class BtcToolchangerToolDialog extends Mixins(BtcToolchangerMixin) {
++  @VModel({ type: Boolean })
++  open?: boolean
++
++  @Prop({ type: Number, default: null })
++  readonly toolNumber!: number | null
++
++  axes: Axis[] = ['x', 'y', 'z']
++  offsets: Record<Axis, number> = { x: 0, y: 0, z: 0 }
++  targetInput = 0
++  localMaterial = ''
++  localColor = DEFAULT_LOCAL_COLOR
++
++  get maxTemp (): number {
++    return BTC_MAX_TEMP
++  }
++
++  get tool (): Klipper.BtcDashboardToolState | null {
++    return this.btcTools.find(tool => tool.n === this.toolNumber) ?? null
++  }
++
++  get kind (): BtcToolKind {
++    return this.tool ? this.btcToolKind(this.tool) : 'docked'
++  }
++
++  get look (): BtcToolLook {
++    return this.tool ? this.btcToolLook(this.tool) : { color: null, material: '', spool: null }
++  }
++
++  get title (): string {
++    if (!this.tool) return ''
++
++    return this.look.material ? `${this.tool.name} · ${this.look.material}` : this.tool.name
++  }
++
++  get presets (): Klipper.BtcDashboardPreset[] {
++    return this.tool ? this.btcPresets(this.tool) : []
++  }
++
++  get spoolTemp (): number | null {
++    return this.tool ? this.btcSpoolTemp(this.tool) : null
++  }
++
++  get presetsSourceText (): string {
++    if (!this.tool) return ''
++
++    const source = this.tool.presets_source ?? 'default'
++
++    return this.$t(`app.btc_toolchanger.msg.presets_source.${source}`, { n: this.tool.n }).toString()
++  }
++
++  get stateText (): string {
++    if (!this.tool) return ''
++
++    const base = this.$t(`app.btc_toolchanger.state_long.${this.kind}`).toString()
++
++    if (this.kind === 'active') return base
++    if (this.tool.docked === true) return `${base} · ${this.$t('app.btc_toolchanger.label.in_dock')}`
++    if (this.tool.docked === false) return `${base} · ${this.$t('app.btc_toolchanger.label.not_in_dock')}`
++
++    return base
++  }
++
++  get stateClass (): string {
++    if (this.kind === 'active') return 'primary--text'
++    if (this.kind === 'standby') return 'warning--text'
++
++    return ''
++  }
++
++  get shaperText (): string {
++    const shaper = this.tool?.shaper
++
++    if (!shaper?.type_x) return '--'
++
++    return `${shaper.type_x} ${shaper.freq_x} / ${shaper.type_y} ${shaper.freq_y} Hz`
++  }
++
++  get offsetsValid (): boolean {
++    return this.axes.every(axis => {
++      const value = this.offsets[axis]
++
++      return typeof value === 'number' && !isNaN(value) && Math.abs(value) <= BTC_MAX_OFFSET
++    })
++  }
++
++  get offsetHint (): string {
++    if (!this.tool) return ''
++
++    return this.btc?.config.save_offsets
++      ? this.$t('app.btc_toolchanger.msg.offsets_saved', { n: this.tool.n }).toString()
++      : this.$t('app.btc_toolchanger.msg.offsets_temporary', { n: this.tool.n }).toString()
++  }
++
++  get selectBlockedByPrint (): boolean {
++    return this.btcLocked && this.tool?.active !== true
++  }
++
++  get selectText (): string {
++    if (!this.tool) return ''
++    if (this.tool.active) return this.$t('app.btc_toolchanger.btn.on_carriage').toString()
++
++    return this.$t('app.btc_toolchanger.btn.select', { name: this.tool.name }).toString()
++  }
++
++  @Watch('open')
++  onOpen (value: boolean) {
++    if (value) this.resetInputs()
++  }
++
++  @Watch('toolNumber')
++  onToolNumberChanged () {
++    this.resetInputs()
++  }
++
++  resetInputs () {
++    const tool = this.tool
++
++    if (!tool) return
++
++    this.offsets = { x: tool.xoffset, y: tool.yoffset, z: tool.zoffset }
++    this.targetInput = Math.round(tool.target)
++
++    const local = this.btcSettings.tools[tool.name]
++
++    this.localMaterial = local?.material ?? ''
++    this.localColor = this.btcNormaliseColor(local?.color) ?? this.look.color ?? DEFAULT_LOCAL_COLOR
++  }
++
++  setTemp (value: number) {
++    if (!this.tool) return
++
++    const target = Math.max(0, Math.min(BTC_MAX_TEMP, Math.round(Number(value) || 0)))
++
++    this.targetInput = target
++    this.sendGcode(`SET_HEATER_TEMPERATURE HEATER=${this.tool.extruder} TARGET=${target}`)
++  }
++
++  saveOffsets () {
++    if (!this.tool || !this.offsetsValid) return
++
++    const { x, y, z } = this.offsets
++
++    this.sendGcode(`BTC_DASHBOARD_SET_OFFSET TOOL=${this.tool.n} X=${x} Y=${y} Z=${z}`)
++  }
++
++  saveLocal () {
++    if (!this.tool) return
++
++    this.$typedDispatch('config/saveByPath', {
++      path: `uiSettings.btcToolchanger.tools.${this.tool.name}`,
++      value: { material: this.localMaterial.trim(), color: this.localColor },
++      server: true
++    })
++  }
++
++  changeSpool () {
++    if (!this.tool) return
++
++    this.$typedCommit('spoolman/setDialogState', {
++      show: true,
++      targetMacro: this.tool.name
++    })
++  }
++
++  selectTool () {
++    if (!this.tool) return
++
++    this.sendGcode(this.tool.name)
++    this.open = false
++  }
++
++  dropoff () {
++    if (!this.tool) return
++
++    this.sendGcode(`TOOL_DROPOFF TOOLNUMBER=${this.tool.n}`)
++    this.open = false
++  }
++}
++</script>
++
++<style lang="scss" scoped>
++.btc-dlg-hero {
++  display: flex;
++  flex-shrink: 0;
++  align-items: center;
++  justify-content: center;
++  width: 110px;
++  height: 150px;
++  border-radius: 8px;
++  background: rgba(128, 128, 128, 0.12);
++}
++
++.btc-dlg-facts {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: 10px 14px;
++  align-content: start;
++}
++
++.btc-dlg-wide {
++  grid-column: span 2;
++}
++
++.btc-mono {
++  font-family: 'Roboto Mono', monospace;
++}
++
++.btc-gap {
++  gap: 8px;
++}
++
++.btc-num {
++  max-width: 110px;
++}
++
++.btc-material {
++  max-width: 180px;
++}
++
++.btc-swatch {
++  flex-shrink: 0;
++  width: 18px;
++  height: 18px;
++  border-radius: 4px;
++  border: 1px solid rgba(128, 128, 128, 0.6);
++}
++
++.btc-color {
++  width: 40px;
++  height: 30px;
++  padding: 2px;
++  border: 1px solid rgba(128, 128, 128, 0.5);
++  border-radius: 4px;
++  background: transparent;
++}
++
++@media (max-width: 480px) {
++  .btc-dlg-top {
++    flex-direction: column;
++  }
++
++  .btc-dlg-hero {
++    width: 100%;
++    height: 120px;
++    margin: 0 0 12px 0 !important;
++  }
++}
++</style>
+diff --git a/src/globals.ts b/src/globals.ts
+index 2269ea1..0129eae 100644
+--- a/src/globals.ts
++++ b/src/globals.ts
+@@ -193,6 +193,7 @@ import {
+   mdiMulticast,
+   mdiInformationOutline,
+   mdiSwapHorizontal,
++  mdiSwapHorizontalCircleOutline,
+   mdiSwapHorizontalVariant,
+   mdiRadioboxBlank,
+   mdiLifebuoy,
+@@ -555,6 +556,7 @@ export const Icons = Object.freeze({
+   mmuUpdateLeds: mdiContentSaveSettingsOutline,
+   mmuError: mdiInformationOutline,
+   mmuSelectGate: mdiSwapHorizontal,
++  btcToolchanger: mdiSwapHorizontalCircleOutline,
+   mmuHumidity: mdiWater,
+   mmuTemp: mdiThermometer,
+   mmuHeater: mdiHeatingCoil,
+diff --git a/src/locales/en.yaml b/src/locales/en.yaml
+index 7a656e5..fe748ea 100644
+--- a/src/locales/en.yaml
++++ b/src/locales/en.yaml
+@@ -142,6 +142,84 @@ app:
+       load: Load Profile
+       save: Commits calibrated profile to printer.cfg
+       download_image: Download bed mesh image
++  btc_toolchanger:
++    btn:
++      change_spool: Change spool
++      check_tool: Check tool
++      drop_off: Drop off
++      drop_off_tool: Drop off {name}
++      home_dockslide: Home dockslide
++      on_carriage: On carriage
++      sanity_check: Sanity check
++      save: Save
++      select: Select {name}
++      set: Set
++      spool_preset: Spool {temp}
++    dockslide:
++      deployed: deployed
++      parked: parked
++      standby: standby
++      unknown: unknown
++    label:
++      auto: Auto
++      carriage: Carriage
++      carriage_empty: Carriage empty
++      changes: Changes
++      changes_this_print: Changes this print
++      changing: Changing tool…
++      colour: Colour
++      dockslide: Dockslide
++      empty: empty
++      fail: FAIL
++      failed: FAILED
++      filament: Filament
++      heater: Heater
++      hotend_fan: Hotend fan
++      in_dock: sensed in dock
++      input_shaper: Input shaper
++      last: Last
++      locked: locked
++      material: Material
++      mismatch: mismatch
++      no_filament: No filament set
++      no_spool: No spool assigned
++      not_homed: not homed
++      not_in_dock: not in dock!
++      heater_off: 'off'
++      offsets: Offsets
++      ok: OK
++      show_actions: Show action buttons
++      show_log: Show toolchange log
++      show_status: Show status line
++      state: State
++      target: Target
++      target_temperature: Target temperature
++      temperature: Temperature
++      tile: '{name}, {material}, {state}, {temp} degrees. Open tool options'
++      tiles_per_row: Tiles per row
++      tool_active: '{name} active'
++    msg:
++      locked_while_printing: Tool changes are locked while printing
++      no_tools: No tools found. Run BTC_DASHBOARD_STATUS in the console.
++      no_toolchanges: No toolchanges yet
++      offsets_saved: Saved to save_variables and restored after restart (overrides tool_{n}.cfg).
++      offsets_temporary: Applies until restart. Add [save_variables] to keep changes, or copy them into tool_{n}.cfg.
++      presets_source:
++        config: Presets from presets_t{n} in btc_dashboard.cfg
++        default: Presets from presets in btc_dashboard.cfg (add presets_t{n} for this tool)
++        tool: Presets from variable_temp_presets in _VARIABLES_T{n}
++    state:
++      active: active
++      docked: docked
++      standby: standby
++    state_long:
++      active: On carriage
++      docked: Docked · off
++      standby: Docked · standby
++    title:
++      card: Toolchanger
++      log: Toolchange log
++      settings: Toolchanger settings
+   chart:
+     label:
+       current: Actual
+diff --git a/src/mixins/btcToolchanger.ts b/src/mixins/btcToolchanger.ts
+new file mode 100644
+index 0000000..07a596e
+--- /dev/null
++++ b/src/mixins/btcToolchanger.ts
+@@ -0,0 +1,122 @@
++import Component from 'vue-class-component'
++import { Mixins } from 'vue-property-decorator'
++import StateMixin from '@/mixins/state'
++import type { Spool } from '@/store/spoolman/types'
++import type { BtcToolchangerConfig } from '@/store/config/types'
++
++export type BtcToolKind = 'active' | 'standby' | 'docked'
++
++export interface BtcToolLook {
++  color: string | null;
++  material: string;
++  spool: Spool | null;
++}
++
++// used only with an add-on older than 0.2.0, which does not publish presets
++const BTC_FALLBACK_PRESETS: Klipper.BtcDashboardPreset[] = [
++  { label: 'Standby', temp: 150 },
++  { label: 'PLA', temp: 215 },
++  { label: 'PETG', temp: 240 },
++  { label: 'ABS', temp: 255 }
++]
++
++const HEX_COLOR = /^#?([0-9a-f]{6})/i
++export const BTC_MAX_TEMP = 350
++export const BTC_MAX_OFFSET = 20
++
++@Component
++export default class BtcToolchangerMixin extends Mixins(StateMixin) {
++  get btc (): Klipper.BtcDashboardState | undefined {
++    return this.$typedState.printer.printer.btc_dashboard
++  }
++
++  get btcTools (): Klipper.BtcDashboardToolState[] {
++    return this.btc?.tools ?? []
++  }
++
++  get btcActiveTool (): number {
++    return this.btc?.active_tool ?? -1
++  }
++
++  get btcBusy (): boolean {
++    return this.btc?.busy ?? false
++  }
++
++  // tool changes, offsets and action buttons are blocked during a print or a running change
++  get btcLocked (): boolean {
++    return !this.klippyReady || this.printerPrinting || this.printerPaused || this.btcBusy
++  }
++
++  get btcUseSpoolman (): boolean {
++    if (this.btc?.config.spoolman === 'no') return false
++
++    return this.$typedGetters['server/componentSupport']('spoolman')
++  }
++
++  get btcSettings (): BtcToolchangerConfig {
++    return this.$typedState.config.uiSettings.btcToolchanger
++  }
++
++  btcToolKind (tool: Klipper.BtcDashboardToolState): BtcToolKind {
++    if (tool.active) return 'active'
++
++    return tool.target > 0 ? 'standby' : 'docked'
++  }
++
++  btcToolLook (tool: Klipper.BtcDashboardToolState): BtcToolLook {
++    const spool = this.btcUseSpoolman && tool.spool_id != null
++      ? this.$typedGetters['spoolman/getSpoolById'](Number(tool.spool_id)) ?? null
++      : null
++
++    if (spool) {
++      const filament = spool.filament
++
++      return {
++        color: this.btcNormaliseColor(filament.color_hex),
++        material: [filament.material, filament.name].filter(Boolean).join(' ') || `#${spool.id}`,
++        spool
++      }
++    }
++
++    const local = this.btcSettings.tools[tool.name]
++
++    if (local && (local.color || local.material)) {
++      return { color: this.btcNormaliseColor(local.color), material: local.material, spool: null }
++    }
++
++    // same convention Fluidd's tool buttons use: variable_color on the Tn macro
++    const macro = this.$typedGetters['macros/getMacroByName'](tool.name)
++    const macroColor = macro?.variables?.color ?? macro?.variables?.colour
++
++    return {
++      color: typeof macroColor === 'string' ? this.btcNormaliseColor(macroColor) : null,
++      material: tool.spool_id != null ? `#${tool.spool_id}` : '',
++      spool: null
++    }
++  }
++
++  btcNormaliseColor (value?: string | null): string | null {
++    const match = HEX_COLOR.exec(value ?? '')
++
++    return match ? `#${match[1]}` : null
++  }
++
++  btcPresets (tool: Klipper.BtcDashboardToolState): Klipper.BtcDashboardPreset[] {
++    return tool.presets ?? this.btc?.config.default_presets ?? BTC_FALLBACK_PRESETS
++  }
++
++  // print temperature of the filament on the tool's Spoolman spool, if it has one
++  btcSpoolTemp (tool: Klipper.BtcDashboardToolState): number | null {
++    const temp = this.btcToolLook(tool).spool?.filament.settings_extruder_temp
++
++    return typeof temp === 'number' && temp > 0 ? Math.round(temp) : null
++  }
++
++  btcFormatTemp (value: number | null): string {
++    return value == null ? '--' : Math.round(value).toString()
++  }
++
++  btcFormatFan (value: number | null): string {
++    return value == null ? '--' : `${Math.round(value * 100)}%`
++  }
++}
+diff --git a/src/store/config/state.ts b/src/store/config/state.ts
+index 57f7efa..a7da3da 100644
+--- a/src/store/config/state.ts
++++ b/src/store/config/state.ts
+@@ -165,6 +165,13 @@ export const createState = (): ConfigState => {
+         showLaneInfinite: true,
+         showUnitIcons: true,
+         showTd1Color: true,
++      },
++      btcToolchanger: {
++        columns: 'auto',
++        showStatus: true,
++        showActions: true,
++        showLog: false,
++        tools: {}
+       }
+     }
+   }
+diff --git a/src/store/config/types.ts b/src/store/config/types.ts
+index d994a28..f6c8726 100644
+--- a/src/store/config/types.ts
++++ b/src/store/config/types.ts
+@@ -31,6 +31,7 @@ export interface UiSettings {
+   history: HistoryConfig;
+   mmu: MmuConfig;
+   afc: AfcConfig;
++  btcToolchanger: BtcToolchangerConfig;
+ }
+ 
+ export interface WarningsConfig {
+@@ -76,6 +77,21 @@ export interface MmuConfig {
+   showUnavailableSpoolColor: boolean;
+ }
+ 
++export type BtcToolchangerColumns = 'auto' | 2 | 3 | 4 | 6 | 8
++
++export interface BtcToolchangerToolConfig {
++  material: string;
++  color: string;
++}
++
++export interface BtcToolchangerConfig {
++  columns: BtcToolchangerColumns;
++  showStatus: boolean;
++  showActions: boolean;
++  showLog: boolean;
++  tools: Record<string, BtcToolchangerToolConfig>;
++}
++
+ export interface AfcConfig {
+   hiddenExtruders: string[];
+   hiddenUnits: string[];
+diff --git a/src/store/layout/state.ts b/src/store/layout/state.ts
+index 36e57ac..addc692 100644
+--- a/src/store/layout/state.ts
++++ b/src/store/layout/state.ts
+@@ -57,6 +57,7 @@ export const createState = (): LayoutState => {
+           { id: 'printer-status-card', enabled: true, collapsed: false },
+           { id: 'spoolman-card', enabled: true, collapsed: false },
+           { id: 'mmu-card', enabled: true, collapsed: false },
++          { id: 'btc-toolchanger-card', enabled: true, collapsed: false },
+           { id: 'camera-card', enabled: true, collapsed: false },
+           { id: 'toolhead-card', enabled: true, collapsed: false },
+           { id: 'macros-card', enabled: true, collapsed: false },
+diff --git a/src/typings/klipper.d.ts b/src/typings/klipper.d.ts
+index 4772180..b8801d7 100644
+--- a/src/typings/klipper.d.ts
++++ b/src/typings/klipper.d.ts
+@@ -149,6 +149,8 @@ declare namespace Klipper {
+ 
+       beacon: BeaconState;
+ 
++      btc_dashboard: BtcDashboardState;
++
+       mmu: MmuState;
+ 
+       mmu_leds: MmuLedsState;
+@@ -612,6 +614,84 @@ declare namespace Klipper {
+     model?: string | null;
+   }
+ 
++  // BTC (Bikin Toolchanger) status published by the btc_dashboard add-on
++  export interface BtcDashboardToolState {
++    n: number;
++    name: string;
++    active: boolean;
++    extruder: string;
++    fan: string;
++    temperature: number | null;
++    target: number;
++    power: number;
++    fan_speed: number | null;
++    xoffset: number;
++    yoffset: number;
++    zoffset: number;
++    shaper: {
++      type_x: string | null;
++      freq_x: number | null;
++      type_y: string | null;
++      freq_y: number | null;
++    };
++    pressure_advance: number;
++    spool_id: number | null;
++    docked: boolean | null;
++    presets?: BtcDashboardPreset[];
++    presets_source?: 'tool' | 'config' | 'default';
++  }
++
++  export interface BtcDashboardPreset {
++    label: string;
++    temp: number;
++  }
++
++  export interface BtcDashboardLogEntry {
++    time: number;
++    kind: 'pickup' | 'dropoff';
++    label: string;
++    from: number;
++    to: number;
++    duration: number;
++    result: 'ok' | 'fail';
++    detail: string;
++  }
++
++  export interface BtcDashboardState {
++    version: string;
++    config: {
++      tool_count: number;
++      dock_sense: 'none' | 'per_tool';
++      dockslide: boolean;
++      spoolman: 'auto' | 'yes' | 'no';
++      save_offsets: boolean;
++      save_variables: boolean;
++      carriage_sense: boolean;
++      default_presets?: BtcDashboardPreset[];
++    };
++    active_tool: number;
++    carriage: 'PRESSED' | 'RELEASED' | null;
++    busy: boolean;
++    last_dropoff_successful: boolean;
++    dockslide: {
++      state: 'unknown' | 'parked' | 'deployed' | 'standby';
++      homed: boolean;
++      endstops: Record<string, string>;
++    } | null;
++    tools: BtcDashboardToolState[];
++    stats: {
++      changes_total: number;
++      changes_print: number;
++      failed_total: number;
++      avg_time: number;
++      last_time: number;
++      last_result: '' | 'ok' | 'fail';
++      tools_used_print: number[];
++    };
++    log: BtcDashboardLogEntry[];
++    errors: string[];
++  }
++
+   export interface MmuState {
+     enabled: boolean;
+     num_gates: number;
+diff --git a/src/views/Dashboard.vue b/src/views/Dashboard.vue
+index a01c43f..d871f27 100644
+--- a/src/views/Dashboard.vue
++++ b/src/views/Dashboard.vue
+@@ -51,6 +51,7 @@ import GcodePreviewCard from '@/components/widgets/gcode-preview/GcodePreviewCar
+ import JobQueueCard from '@/components/widgets/job-queue/JobQueueCard.vue'
+ import SpoolmanCard from '@/components/widgets/spoolman/SpoolmanCard.vue'
+ import MmuCard from '@/components/widgets/mmu/MmuCard.vue'
++import BtcToolchangerCard from '@/components/widgets/btc-toolchanger/BtcToolchangerCard.vue'
+ import SensorsCard from '@/components/widgets/sensors/SensorsCard.vue'
+ import RunoutSensorsCard from '@/components/widgets/runout-sensors/RunoutSensorsCard.vue'
+ import BeaconCard from '@/components/widgets/beacon/BeaconCard.vue'
+@@ -74,6 +75,7 @@ import type Sortable from 'sortablejs'
+     JobQueueCard,
+     SpoolmanCard,
+     MmuCard,
++    BtcToolchangerCard,
+     SensorsCard,
+     RunoutSensorsCard,
+     BeaconCard,
+@@ -146,6 +148,10 @@ export default class Dashboard extends Mixins(StateMixin) {
+     return this.$typedGetters['server/componentSupport']('spoolman')
+   }
+ 
++  get supportsBtcToolchanger (): boolean {
++    return this.$typedState.printer.printer.btc_dashboard != null
++  }
++
+   get supportsMmu (): boolean {
+     return this.$typedState.printer.printer.mmu != null
+   }
+@@ -234,6 +240,7 @@ export default class Dashboard extends Mixins(StateMixin) {
+     if (item.id === 'runout-sensors-card' && !this.supportsRunoutSensors) return true
+     if (item.id === 'spoolman-card' && !this.supportsSpoolman) return true
+     if (item.id === 'mmu-card' && !this.supportsMmu) return true
++    if (item.id === 'btc-toolchanger-card' && !this.supportsBtcToolchanger) return true
+     if (item.id === 'sensors-card' && !this.hasSensors) return true
+     if (item.id === 'temperature-card' && !this.hasHeatersOrTemperatureSensors) return true
+     if (item.id === 'afc-card' && !this.supportsAfc) return true
+-- 
+2.43.0
+

@@ -1,0 +1,46 @@
+# BTC Dashboard - example config. install.sh writes a filled-in copy to
+# ~/printer_data/config/btc_dashboard.cfg and includes it from printer.cfg.
+# Restart Klipper after changing anything here.
+
+[btc_dashboard]
+# Number of tools to show. "auto" finds every _VARIABLES_Tn macro.
+tools: auto
+
+# gcode_button that reads the carriage switch (btc_carriage.cfg).
+carriage_sense: carriage_sense
+
+# Per-dock presence switches:
+#   none      - Lineux default, only the carriage switch is fitted
+#   per_tool  - one gcode_button per dock, named by dock_sense_button
+dock_sense: none
+#dock_sense_button: dock_sense_t{n}
+
+# Dockslide status and endstops. auto = on if DOCKSLIDE_HOME exists.
+dockslide: auto
+
+# Spoolman: auto = on when Moonraker has a [spoolman] section.
+# no = set material and colour per tool in the dashboard instead.
+spoolman: auto
+
+# Keep offsets edited in the dashboard after a restart (needs [save_variables]).
+# auto = yes when [save_variables] exists.
+save_offsets: auto
+
+# Only needed if your names differ from BTC's defaults
+# (extruder, extruder1, ... and the heater_fan that follows each heater).
+#extruder_names: extruder, extruder1, extruder2
+#hotend_fan_names: hotend_fan0, hotend_fan1, hotend_fan2
+
+# Temperature preset buttons in each tool's popup (label:°C, comma separated).
+# "presets" is used for every tool that has no list of its own.
+presets: Standby:150, PLA:215, PETG:240, ABS:255
+# Per-tool lists override it:
+#presets_t2: Standby:160, PETG:240, ASA:255
+#presets_t3: Standby:0, TPU:225
+# A list can instead live in the tool's own file, which wins over both:
+#   [gcode_macro _VARIABLES_T3]
+#   variable_temp_presets: "Standby:0, TPU:225"
+# Presets above the heater's max_temp are not shown (BTC_DASHBOARD_STATUS warns).
+
+# Toolchanges kept in the log.
+log_length: 20

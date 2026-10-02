@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.bak
+*.btcdash-*.bak
+.DS_Store

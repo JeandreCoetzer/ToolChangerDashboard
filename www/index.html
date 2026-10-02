@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTC Toolchanger</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="wrap">
+  <section class="card" id="panel" aria-labelledby="panel-title">
+    <header class="card-head">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10v6H7z"/><path d="M9 9v4h6V9"/><path d="M10.5 13v3l1.5 2 1.5-2v-3"/><path d="M3 21h18"/></svg>
+      <h1 id="panel-title">Toolchanger</h1>
+      <span class="chip" id="active-chip" hidden></span>
+      <span class="grow"></span>
+      <button class="icon-btn" id="btn-settings" type="button" aria-label="Dashboard settings">
+        <svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-collapse" type="button" aria-label="Collapse panel" aria-expanded="true">
+        <svg class="ico" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+    </header>
+
+    <div id="body">
+      <div class="banner" id="banner" hidden></div>
+      <div class="strip" id="strip"></div>
+      <div class="grid" id="grid" role="list"></div>
+      <div class="actions" id="actions">
+        <button type="button" class="btn" data-gcode="CHECK_CARRIAGE">Check tool</button>
+        <button type="button" class="btn" data-gcode="SANITY_CHECK_TOOLS">Sanity check</button>
+        <button type="button" class="btn" id="btn-dockslide" data-gcode="DOCKSLIDE_HOME" hidden>Home dockslide</button>
+        <button type="button" class="btn" id="btn-dropoff" hidden>Drop off</button>
+      </div>
+      <details class="log" id="log-wrap">
+        <summary>Toolchange log</summary>
+        <ol id="log"></ol>
+      </details>
+    </div>
+  </section>
+</main>
+
+<!-- tool popup -->
+<dialog id="tool-dialog" aria-labelledby="td-title">
+  <form method="dialog" class="dlg">
+    <header class="card-head">
+      <span class="swatch big" id="td-swatch"></span>
+      <h2 id="td-title">T0</h2>
+      <span class="grow"></span>
+      <button class="icon-btn" value="close" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </header>
+    <div class="dlg-body">
+      <div class="dlg-top">
+        <div class="hero" id="td-hero"></div>
+        <dl class="facts">
+          <div><dt>State</dt><dd id="td-state"></dd></div>
+          <div><dt>Temperature</dt><dd class="mono" id="td-temp"></dd></div>
+          <div><dt>Hotend fan</dt><dd class="mono" id="td-fan"></dd></div>
+          <div><dt>Heater</dt><dd class="mono" id="td-heater"></dd></div>
+          <div class="wide"><dt>Input shaper</dt><dd class="mono" id="td-shaper"></dd></div>
+        </dl>
+      </div>
+
+      <fieldset>
+        <legend>Target temperature</legend>
+        <div class="row" id="td-presets"></div>
+        <p class="hint" id="td-presetsrc"></p>
+        <div class="row">
+          <label class="inline">Target <input type="number" id="td-target" min="0" max="350" step="1"> °C</label>
+          <button type="button" class="btn small" id="td-settemp">Set</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Offsets (mm)</legend>
+        <div class="row">
+          <label class="inline">X <input type="number" id="td-ox" step="0.001"></label>
+          <label class="inline">Y <input type="number" id="td-oy" step="0.001"></label>
+          <label class="inline">Z <input type="number" id="td-oz" step="0.001"></label>
+          <button type="button" class="btn small" id="td-saveoff">Save</button>
+        </div>
+        <p class="hint" id="td-offhint"></p>
+      </fieldset>
+
+      <fieldset id="td-spool-set">
+        <legend>Filament</legend>
+        <div class="row" id="td-spoolman-row">
+          <label class="inline grow">Spool
+            <select id="td-spool"><option value="">No spool</option></select>
+          </label>
+          <button type="button" class="btn small" id="td-setspool">Assign</button>
+        </div>
+        <div class="row" id="td-local-row">
+          <label class="inline">Material <input type="text" id="td-material" maxlength="16" size="8"></label>
+          <label class="inline">Colour <input type="color" id="td-color"></label>
+          <button type="button" class="btn small" id="td-setlocal">Save</button>
+        </div>
+      </fieldset>
+    </div>
+    <footer class="dlg-foot">
+      <button type="button" class="btn" id="td-dropoff" hidden>Drop off</button>
+      <span class="grow"></span>
+      <button type="button" class="btn primary" id="td-select">Select</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- settings -->
+<dialog id="settings-dialog" aria-labelledby="sd-title">
+  <form method="dialog" class="dlg">
+    <header class="card-head">
+      <h2 id="sd-title">Dashboard settings</h2>
+      <span class="grow"></span>
+      <button class="icon-btn" value="close" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </header>
+    <div class="dlg-body">
+      <label class="field">Tiles per row
+        <select id="sd-cols"><option value="auto">Auto</option><option>3</option><option>4</option><option>6</option><option>8</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="sd-strip"> Show status line</label>
+      <label class="check"><input type="checkbox" id="sd-log"> Show toolchange log</label>
+      <label class="check"><input type="checkbox" id="sd-confirm"> Ask before changing tools</label>
+      <p class="hint">Saved in Moonraker's database, so they stay with this printer.</p>
+    </div>
+    <footer class="dlg-foot">
+      <span class="grow"></span>
+      <button type="button" class="btn primary" id="sd-save">Save</button>
+    </footer>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
