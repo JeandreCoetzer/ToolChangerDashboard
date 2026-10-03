@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# BTC Dashboard uninstaller - removes the add-on, nginx site and config hooks.
+# BTC Dashboard uninstaller - removes the add-on, nginx site and config hooks,
+# and puts the official Mainsail / Fluidd back if the Toolchanger build was installed.
 # btc_dashboard.cfg is renamed, not deleted. Backups of edited files are kept.
 set -euo pipefail
 KLIPPER_DIR="${HOME}/klipper"
@@ -36,4 +37,10 @@ if [[ -e /etc/nginx/sites-enabled/btc-dashboard || -e /etc/nginx/sites-available
   sudo nginx -t && sudo systemctl reload nginx
   echo "Removed nginx site"
 fi
+for UI in mainsail fluidd; do
+  if [[ -d "${HOME}/${UI}.official-backup" ]]; then
+    bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/install_ui_build.sh" "$UI" --restore
+  fi
+done
+
 echo "Done. Restart Klipper (and Moonraker) to finish."

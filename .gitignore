@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
 *.bak
-*.btcdash-*.bak
+*.part
 .DS_Store
+# ready-built UIs are published as release assets, not committed
+mainsail/*.zip
+fluidd/*.zip

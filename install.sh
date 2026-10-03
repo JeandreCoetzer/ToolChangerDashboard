@@ -166,9 +166,12 @@ BTC_CFG="$(grep -rlE '^\[delayed_gcode start_check_carriage\]' "$CONFIG_DIR" --i
 if [[ -n "$BTC_CFG" ]] && grep -q "for tools in range(6)" "$BTC_CFG"; then
   N="$FOUND_TOOLS"; [[ "$TOOLS" =~ ^[0-9]+$ ]] && N="$TOOLS"
   if [[ "$N" -gt 6 ]]; then
-    warn "Your BTC macros only register tools T0-T5 at startup (range(6) in $(basename "$BTC_CFG"))."
-    if yesno "Patch it to range(16) so T6+ work (a backup is kept)?" y; then
+    warn "Your BTC macros only register tools T0-T5 at startup: 'for tools in range(6)' in ${BTC_CFG}."
+    echo "   The fix changes that one line to range(16). A backup is kept next to the file."
+    echo "   Updating or re-copying BTC's files puts range(6) back; run ./install.sh again after that."
+    if yesno "Patch ${BTC_CFG##*/} so T6 and up work?" y; then
       backup "$BTC_CFG"; sed -i 's/for tools in range(6)/for tools in range(16)/' "$BTC_CFG"
+      info "Patched ${BTC_CFG} (backup: ${BTC_CFG}.btcdash-${STAMP}.bak)"
     fi
   fi
 fi
@@ -193,27 +196,20 @@ EOF
   fi
 fi
 
-# ---------------------------------------------------------------- Mainsail panel
-MS_ZIP="$(ls "${REPO_DIR}"/mainsail/mainsail-btc-toolchanger-*.zip 2>/dev/null | sort -V | tail -n1 || true)"
-if [[ -n "$MS_ZIP" && -d "${HOME}/mainsail" ]]; then
+# ---------------------------------------------------------------- Mainsail / Fluidd builds
+# The ready-built zips live on the GitHub release (see ui-builds.conf) and are downloaded on demand.
+source "${REPO_DIR}/ui-builds.conf"
+for UI in mainsail fluidd; do
+  [[ -d "${HOME}/${UI}" ]] || continue
+  if [[ "$UI" == mainsail ]]; then UI_NAME="Mainsail"; UI_ZIP="$MAINSAIL_ZIP"; else UI_NAME="Fluidd"; UI_ZIP="$FLUIDD_ZIP"; fi
   echo
-  info "Mainsail build with the Toolchanger panel: $(basename "$MS_ZIP")"
-  if yesno "Install it into ~/mainsail (the official one is backed up; undo with mainsail/install_mainsail_build.sh --restore)?" y; then
-    bash "${REPO_DIR}/mainsail/install_mainsail_build.sh" "$MS_ZIP"
+  info "${UI_NAME} build with the Toolchanger panel: ${UI_ZIP} (release ${RELEASE_TAG})"
+  echo "   This replaces ~/${UI} with that ${UI_NAME} version. The official one is backed up first;"
+  echo "   undo with: ${UI}/install_${UI}_build.sh --restore"
+  if yesno "Install it into ~/${UI}?" y; then
+    bash "${REPO_DIR}/scripts/install_ui_build.sh" "$UI" || warn "${UI_NAME} build not installed - see the message above."
   fi
-elif [[ -n "$MS_ZIP" ]]; then
-  warn "~/mainsail not found - skipping the Mainsail panel (see mainsail/README.md)."
-fi
-
-# ---------------------------------------------------------------- Fluidd card
-FL_ZIP="$(ls "${REPO_DIR}"/fluidd/fluidd-btc-toolchanger-*.zip 2>/dev/null | sort -V | tail -n1 || true)"
-if [[ -n "$FL_ZIP" && -d "${HOME}/fluidd" ]]; then
-  echo
-  info "Fluidd build with the Toolchanger card: $(basename "$FL_ZIP")"
-  if yesno "Install it into ~/fluidd (the official one is backed up; undo with fluidd/install_fluidd_build.sh --restore)?" y; then
-    bash "${REPO_DIR}/fluidd/install_fluidd_build.sh" "$FL_ZIP"
-  fi
-fi
+done
 
 # ---------------------------------------------------------------- standalone page (nginx)
 if command -v nginx >/dev/null 2>&1; then

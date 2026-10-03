@@ -1,16 +1,19 @@
 # Toolchanger panel inside Mainsail
 
-This folder contains a **Toolchanger** panel for the Mainsail dashboard. It sits alongside Toolhead, Extruder and Temperatures, and you can move, collapse and hide it like any other panel. It works the same way as Happy Hare's MMU panel:
+A **Toolchanger** panel for the Mainsail dashboard. It sits alongside Toolhead, Extruder and Temperatures, and you can move, collapse and hide it like any other panel. It works like Happy Hare's MMU panel:
 
 - The **Klipper add-on** (`klippy/btc_dashboard.py`, installed by `../install.sh`) publishes `printer.btc_dashboard`.
-- **Mainsail** shows the panel only when that object exists. If the add-on isn't loaded, the panel doesn't show.
+- **Mainsail** shows the panel only when that object exists. If the add-on isn't loaded, the panel stays hidden.
+
+> **Status:** tested against a simulated printer only, not yet on real hardware.
 
 | File | What it is |
 |---|---|
 | `0001-feat-btc-toolchanger-…patch` | The code change, made against Mainsail's `develop` branch (v2.19.0) |
-| `mainsail-btc-toolchanger-2.19.0.zip` | A ready-built Mainsail 2.19.0 with the panel included |
-| `install_mainsail_build.sh` | Swaps the built copy in and out of `~/mainsail` |
+| `install_mainsail_build.sh` | Downloads the ready-built Mainsail 2.19.0 with the panel and swaps it in and out of `~/mainsail` |
 | `screenshots/` | The panel, the tool dialog and the spool picker |
+
+The ready-built zip itself is attached to the [GitHub release](https://github.com/JeandreCoetzer/ToolChangerDashboard/releases), not stored in the repo.
 
 ## What the panel does
 
@@ -19,7 +22,7 @@ This folder contains a **Toolchanger** panel for the Mainsail dashboard. It sits
 - **Status line:** carriage switch (with a warning if it disagrees with BTC), Dockslide state, number of toolchanges, and the last change's time and result.
 - **Action buttons:** *Check tool*, *Sanity check*, *Home dockslide* (only with Dockslide) and *Drop off Tn*. These are locked while printing.
 - **Tool dialog:** click a tile to open it.
-  - Temperature presets for that tool, from `btc_dashboard.cfg` (see the main README), plus a **Spool** button with the Spoolman filament temperature, and a box to type a target.
+  - Temperature presets for that tool from `btc_dashboard.cfg` (see the main README), a **Spool** button with the Spoolman filament temperature, and a box to type a target.
   - X/Y/Z offsets, saved through `BTC_DASHBOARD_SET_OFFSET`.
   - Filament: *Change spool* opens Mainsail's own Spoolman picker. Without Spoolman you set a material and colour instead.
   - **Select Tn** button, which runs `Tn`.
@@ -27,23 +30,23 @@ This folder contains a **Toolchanger** panel for the Mainsail dashboard. It sits
 
 ## Option A: use the ready-built copy (quickest)
 
-On the Pi, after running `../install.sh` for the Klipper add-on:
+`../install.sh` offers this when it finds `~/mainsail`. To do it on its own:
 
 ```bash
-cd ~/btc-dashboard/mainsail
-./install_mainsail_build.sh              # backs up ~/mainsail, installs the build, keeps your config.json
-# ./install_mainsail_build.sh --restore  # puts the official Mainsail back
+cd ~/btc-dashboard
+./mainsail/install_mainsail_build.sh             # downloads the build, backs up ~/mainsail, keeps your config.json
+./mainsail/install_mainsail_build.sh --restore   # puts the official Mainsail back
 ```
 
 Reload Mainsail with Ctrl+Shift+R. If the panel doesn't appear straight away, open **Settings → Dashboard** and make sure *Toolchanger* is switched on.
 
-**Catch:** updating Mainsail from the Update Manager puts the official build back. The panel then disappears until you run the script again. To avoid that, use option B.
+Updating Mainsail from the Update Manager puts the official build back, and the panel disappears until you run the script again. Option B avoids that.
 
-## Option B: your own copy of Mainsail on GitHub, with updates
+## Option B: your own fork of Mainsail, with normal updates
 
-1. On GitHub, fork `mainsail-crew/mainsail`, then apply the patch:
+1. On GitHub, fork `mainsail-crew/mainsail`, then apply the patch to your fork:
    ```bash
-   git clone https://github.com/JeandreCoetzer/mainsail.git && cd mainsail
+   git clone https://github.com/<your-github-user>/mainsail.git && cd mainsail
    git checkout develop
    git am ~/btc-dashboard/mainsail/0001-*.patch
    npm ci && npm run build          # makes dist/mainsail.zip
@@ -54,23 +57,18 @@ Reload Mainsail with Ctrl+Shift+R. If the panel doesn't appear straight away, op
    [update_manager mainsail]
    type: web
    channel: stable
-   repo: JeandreCoetzer/mainsail
+   repo: <your-github-user>/mainsail
    path: ~/mainsail
    ```
+
 When Mainsail puts out a new version, merge it into your fork, rebuild and make a new release. The Update Manager will then offer it to you.
 
-## Option C: get it into official Mainsail
+## Option C: official Mainsail
 
-This is the long-term fix: every BTC/Lineux user gets the panel with normal Mainsail updates. Mainsail has two rules to know about first:
-
-- **Only "vouched" contributors can open pull requests.** Pull requests from anyone else are closed automatically (see `CONTRIBUTING.md` → *Contributor Trust*). So start by opening an **issue** that describes the panel, with screenshots and a link to the add-on. Talk with the maintainers there or on their Discord.
-- **Pull requests go against `develop`,** with a Conventional Commit title, and every commit must be **signed off** under the DCO. The commit in the patch isn't signed off, because the sign-off is your statement that you have the right to contribute it. Before you push, run `git commit --amend -s`.
-
-A draft pull request description is in `PR_DESCRIPTION.md`. It already includes the line their template asks for when an AI tool helped write the change.
+The long-term goal is to get the panel into official Mainsail, so every BTC user gets it with normal updates. Progress on that is tracked in [CONTRIBUTING.md](../CONTRIBUTING.md#getting-the-panel-into-mainsail-and-fluidd).
 
 ## What it was checked against
 
-- Mainsail `develop` at v2.19.0 (26 Sep 2026): `npm run lint`, `npm run format:check`, `npm run test:unit` (46 tests passed) and `npm run build` all pass.
-- A full Mainsail build running against a simulated Moonraker (`../tests/mock_moonraker_mainsail.py`). That simulation runs the real `btc_dashboard.py` on a fake 8-tool BTC printer with Spoolman. The screenshots come from that run.
-- **It has not yet been tested on a real printer.**
+- Mainsail `develop` at v2.19.0 (26 Sep 2026): `npm run lint`, `npm run format:check`, `npm run test:unit` (46 tests) and `npm run build` all pass.
+- The full Mainsail build running against a simulated Moonraker (`../tests/mock_moonraker_mainsail.py`), which runs the real `btc_dashboard.py` on a fake 8-tool BTC printer with Spoolman. The screenshots come from that run.
 - Only English text is included. Mainsail falls back to English for other languages until someone translates it.
