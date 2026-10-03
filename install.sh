@@ -124,9 +124,18 @@ if [[ -f "$EXCL" ]] && ! grep -q "klippy/extras/btc_dashboard.py" "$EXCL"; then
 fi
 
 # ---------------------------------------------------------------- config file
+OLD_SAVEVARS=""   # a [save_variables] section that lives in our own file must survive a rewrite
+OLD_PRESETS=""    # so must the user's presets / presets_tN lines
 if [[ -f "$DASH_CFG" ]]; then
-  if yesno "btc_dashboard.cfg already exists. Overwrite it (a backup is kept)?" y; then backup "$DASH_CFG"; else SKIP_CFG=1; fi
+  OLD_SAVEVARS="$(awk '/^\[save_variables\]/{f=1} /^\[/&&!/^\[save_variables\]/{f=0} f' "$DASH_CFG")"
+  OLD_PRESETS="$(grep -E '^presets(_t[0-9]+)?[[:space:]]*[:=]' "$DASH_CFG" || true)"
+  if yesno "btc_dashboard.cfg already exists. Rewrite it from your answers? (your presets and [save_variables] are kept, and a backup is made)" n; then
+    backup "$DASH_CFG"
+  else
+    SKIP_CFG=1
+  fi
 fi
+if [[ -n "$OLD_SAVEVARS" ]]; then ADD_SAVEVARS=0; fi
 if [[ "${SKIP_CFG:-0}" -ne 1 ]]; then
   info "Writing ${DASH_CFG}"
   {
@@ -144,10 +153,17 @@ if [[ "${SKIP_CFG:-0}" -ne 1 ]]; then
     echo "#extruder_names: extruder, extruder1, extruder2"
     echo "#hotend_fan_names: hotend_fan0, hotend_fan1, hotend_fan2"
     echo "# temperature preset buttons (label:°C). Add presets_t<n>: lines for per-tool lists"
-    echo "presets: Standby:150, PLA:215, PETG:240, ABS:255"
-    echo "#presets_t1: Standby:160, PETG:240, ASA:255"
+    if [[ -n "$OLD_PRESETS" ]]; then
+      echo "$OLD_PRESETS"
+    else
+      echo "presets: Standby:150, PLA:215, PETG:240, ABS:255"
+      echo "#presets_t1: Standby:160, PETG:240, ASA:255"
+    fi
     echo "log_length: 20"
-    if [[ $ADD_SAVEVARS -eq 1 ]]; then
+    if [[ -n "$OLD_SAVEVARS" ]]; then
+      echo
+      echo "$OLD_SAVEVARS"
+    elif [[ $ADD_SAVEVARS -eq 1 ]]; then
       echo
       echo "[save_variables]"
       echo "filename: ${CONFIG_DIR}/variables.cfg"
